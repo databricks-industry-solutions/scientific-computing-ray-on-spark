@@ -1,4 +1,3 @@
-%md
 Copyright (2024) Databricks, Inc.
 
 This library (the "Software") may not be used except in connection with the Licensee's use of the Databricks Platform Services pursuant
