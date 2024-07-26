@@ -129,7 +129,6 @@ ray.init(runtime_env=runtime_env)
 
 # COMMAND ----------
 
-# import ray
 # Sample list of various-sized containers
 containers = [{
     "container_id":"C0001", 
@@ -172,12 +171,14 @@ containers_remote = ray.put(containers)
 # MAGIC ## 04. Build Ray Binpacking logic
 # MAGIC
 # MAGIC The cells below construct the `@ray.remote()` functions needed, starting at the innermost loop (e.g. pack one container with one starting orientation) to the outermost loop (e.g. compute results for a single item):
+# MAGIC
+# MAGIC One observation about the following code is just how simple and generally "pythonic" it is: no need to use complex multiprocessing or async calls to have these functions interact with each other, and the code is simple enough for multiple data workers/developers to contribute to and maintain. (Note: the first function does use the default `multiprocessing` Python library due to limitations in the `py3dbp` library we're using here, but in most cases would not be required.)
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ### Inner-most loop: pack_container_ray
-# MAGIC `pack_container_ray()` function is similar to single-node Python, but with some additional error checking and multi-processing usage. 
+# MAGIC `pack_container_ray()` function is similar to single-node Python, but with some additional error checking and multi-processing usage. We also define in the `@ray.remote()` decorator how many variables the function returns
 
 # COMMAND ----------
 
@@ -316,11 +317,12 @@ def permute_item_orientations_ray(args):
 
 # MAGIC %md
 # MAGIC ### Outer-most loop: try_container_n
-# MAGIC The outermost function `try_container_n()` is NOT a Ray remote function, and is called as a normal Python function. However, internal to the function, the logic uses Ray objects and async calls to optimally calculate and retrieve results. 
+# MAGIC The outermost function `try_container_n()` is NOT a Ray remote function, and is called as a normal Python function. However, internal to the function, the logic uses Ray objects to optimally calculate and retrieve results. 
 
 # COMMAND ----------
 
 from typing import Any, Dict
+
 
 def try_container_n_ray(row: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -334,12 +336,12 @@ def try_container_n_ray(row: Dict[str, Any]) -> Dict[str, Any]:
     """
     # Pull out item arguments from Ray row: item_args = (item_x, item_y, item_z, item_wt, item_vol)
     item_args = (
-        row['length'], 
-        row['width'], 
-        row['height'], 
-        row['weight'], 
-        row['volume']
-        )
+        row["length"],
+        row["width"],
+        row["height"],
+        row["weight"],
+        row["volume"],
+    )
 
     # Get remote Ray variable for bins
     bins_args = ray.get(containers_remote)
@@ -348,25 +350,25 @@ def try_container_n_ray(row: Dict[str, Any]) -> Dict[str, Any]:
     # bins_args is remote object
     for bin in bins_args:
         bin_args = (
-            bin["container_length_in"], 
-            bin["container_width_in"], 
+            bin["container_length_in"],
+            bin["container_width_in"],
             bin["container_height_in"],
             bin["fill_capacity_lbs"],
-            bin["bin_vol"]
-            )
+            bin["bin_vol"],
+        )
 
         # Concatenate item and bin arguments into single tuple
         args = item_args + bin_args
-        
+
         # Pass to Ray function for bin fill permutations
         qty_results_list, fill_results_list = permute_item_orientations_ray.remote(args)
-        
+
         single_bin_fill = {
-            "container_id":     bin["container_id"],
-            "qty_results":      ray.get(qty_results_list),
-            "fill_pct_results": ray.get(fill_results_list)
-            }
-        
+            "container_id": bin["container_id"],
+            "qty_results": ray.get(qty_results_list),
+            "fill_pct_results": ray.get(fill_results_list),
+        }
+
         bin_fills.append(single_bin_fill)
 
     # Convert final list to string for serialization
@@ -383,8 +385,9 @@ def try_container_n_ray(row: Dict[str, Any]) -> Dict[str, Any]:
 # COMMAND ----------
 
 import os
-input_filepath = os.path.join(os.getcwd())+"/sample_item_input.parquet"
-print("input_filepath:",input_filepath)
+
+input_filepath = os.path.join(os.getcwd()) + "/sample_item_input.parquet"
+print("input_filepath:", input_filepath)
 
 # Use Ray data to read in file
 items = ray.data.read_parquet(input_filepath)
@@ -424,22 +427,21 @@ items_packed.take(1)
 
 import time
 
-# Set output file destination here, UC volume recommended
+# Set output file destination here, UC volume recommended. Create volume first before running.
 output_filepath = "/Volumes/shared/scientific_computing_ray/bin_packing_optimization/"
 
 start_time = time.perf_counter()
 
 # Run Ray on 30 items
 items_full = (
-  ray.data
-    .read_parquet(input_filepath)
+    ray.data.read_parquet(input_filepath)
     .map(try_container_n_ray)
-    .repartition(1) # Forcing 1 file total
+    .repartition(1)  # Forcing 1 file total
     .write_parquet(output_filepath)
 )
 
 end_time = time.perf_counter()
-print(f"Ray took {end_time - start_time} seconds") 
+print(f"Ray took {end_time - start_time} seconds")
 
 # COMMAND ----------
 
@@ -465,15 +467,31 @@ print(f"Ray took {end_time - start_time} seconds")
 from pyspark.sql.functions import *
 
 results = (
-  spark.read
-  .parquet(output_filepath)
-  .withColumn("bin_fills_cast", from_json(col("bin_fills"), "array<struct<container_id:string,qty_results:array<int>,fill_pct_results:array<double>>>"))
-  .withColumn("bin_fill_raw", explode("bin_fills_cast"))
-  .withColumn("container_id", col("bin_fill_raw.container_id"))
-  .withColumn("max_qty_fill", array_max(col("bin_fill_raw.qty_results")))
-  .withColumn("max_pct_fill", array_max(col("bin_fill_raw.fill_pct_results")))
-  .withColumn("part_dimensions", struct(col("length"), col("width"), col("height"), col("weight")))
-  .select("part_number", "part_description", "part_dimensions", "container_id", "max_qty_fill", "max_pct_fill", "bin_fill_raw")
+    spark.read.parquet(output_filepath)
+    .withColumn(
+        "bin_fills_cast",
+        from_json(
+            col("bin_fills"),
+            "array<struct<container_id:string,qty_results:array<int>,fill_pct_results:array<double>>>",
+        ),
+    )
+    .withColumn("bin_fill_raw", explode("bin_fills_cast"))
+    .withColumn("container_id", col("bin_fill_raw.container_id"))
+    .withColumn("max_qty_fill", array_max(col("bin_fill_raw.qty_results")))
+    .withColumn("max_pct_fill", array_max(col("bin_fill_raw.fill_pct_results")))
+    .withColumn(
+        "part_dimensions",
+        struct(col("length"), col("width"), col("height"), col("weight")),
+    )
+    .select(
+        "part_number",
+        "part_description",
+        "part_dimensions",
+        "container_id",
+        "max_qty_fill",
+        "max_pct_fill",
+        "bin_fill_raw",
+    )
 )
 
 display(results)
