@@ -33,3 +33,9 @@ items.toPandas().to_parquet(output_filepath)
 # COMMAND ----------
 
 
+
+# COMMAND ----------
+
+# MAGIC %environment
+# MAGIC "client": "1"
+# MAGIC "base_environment": ""

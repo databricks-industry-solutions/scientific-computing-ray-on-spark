@@ -323,7 +323,6 @@ def permute_item_orientations_ray(args):
 
 from typing import Any, Dict
 
-
 def try_container_n_ray(row: Dict[str, Any]) -> Dict[str, Any]:
     """
     Determine fill for item in bin N. This function is called N times for each item
